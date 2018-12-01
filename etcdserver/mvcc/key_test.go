@@ -1,9 +1,9 @@
 package mvcc
 
 import (
+	"log"
 	"reflect"
 	"testing"
-	"log"
 )
 
 func TestKey(t *testing.T) {
