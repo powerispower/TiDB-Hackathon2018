@@ -83,9 +83,12 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 	defer it.Close()
 
 	rep := &pb.RangeResponse{
-		Header: &pb.ResponseHeader{},
+		Header: &pb.ResponseHeader{
+			Revision: int64(tx.StartTS()),
+		},
 	}
 	lastRawKey := []byte{}
+	// createRevision := 0
 	for it.Valid() {
 		key, err := mvcc.NewKey(it.Key())
 		if err != nil {
@@ -97,8 +100,8 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 			Value:       it.Value(),
 			ModRevision: key.Revision,
 		}
-		log.Printf("it Key=%v, Value=%v, Revision=%v\n",
-			string(key.RawKey), string(itKv.Value), key.Revision)
+		log.Printf("it Key=%v, Value=%v, Revision=%v, Flag=%v\n",
+			string(key.RawKey), string(itKv.Value), key.Revision, key.Flag)
 
 		if key.Flag == Tombstone {
 			// if it is tombstone, remove all this key old revision
@@ -111,7 +114,7 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 			rep.Kvs = rep.Kvs[:i+1]
 		} else if r.Revision > 0 {
 			// if user specified Revision
-			if key.Revision >= r.Revision {
+			if key.Revision < r.Revision {
 				rep.Kvs = append(rep.Kvs, itKv)
 			}
 		} else {
@@ -123,7 +126,10 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 				rep.Kvs = append(rep.Kvs, itKv)
 			}
 		}
-		lastRawKey = key.RawKey
+		if bytes.Compare(key.RawKey, lastRawKey) != 0 {
+			// createRevision =
+			lastRawKey = key.RawKey
+		}
 
 		it.Next()
 	}
