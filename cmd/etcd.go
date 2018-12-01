@@ -19,6 +19,7 @@ var (
 )
 
 func main() {
+	flag.Parse()
 	driver := tikv.Driver{}
 	store, err := driver.Open(fmt.Sprintf("tikv://%s", *pdURL))
 	if err != nil {
