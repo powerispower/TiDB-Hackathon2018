@@ -103,32 +103,32 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		log.Printf("it Key=%v, Value=%v, Revision=%v, Flag=%v\n",
 			string(key.RawKey), string(itKv.Value), key.Revision, key.Flag)
 
-		if key.Flag == Tombstone {
-			// if it is tombstone, remove all this key old revision
-			i := len(rep.Kvs) - 1
-			for ; i >= 0; i-- {
-				if !reflect.DeepEqual(rep.Kvs[i].Key, itKv.Key) {
-					break
+		if r.Revision > 0 && key.Revision > r.Revision {
+			// if user specify revision
+			// user can't see whaterver > r.Revision
+		} else {
+			if key.Flag == Tombstone {
+				// if it is tombstone, remove all this key old revision
+				i := len(rep.Kvs) - 1
+				for ; i >= 0; i-- {
+					if !reflect.DeepEqual(rep.Kvs[i].Key, itKv.Key) {
+						break
+					}
+				}
+				rep.Kvs = rep.Kvs[:i+1]
+			} else {
+				if bytes.Compare(key.RawKey, lastRawKey) == 0 {
+					// replace with high revision itKv
+					rep.Kvs[len(rep.Kvs)-1] = itKv
+				} else {
+					rep.Kvs = append(rep.Kvs, itKv)
 				}
 			}
-			rep.Kvs = rep.Kvs[:i+1]
-		} else if r.Revision > 0 {
-			// if user specified Revision
-			if key.Revision < r.Revision {
-				rep.Kvs = append(rep.Kvs, itKv)
+
+			if bytes.Compare(key.RawKey, lastRawKey) != 0 {
+				// createRevision =
+				lastRawKey = key.RawKey
 			}
-		} else {
-			// if not, Keep last one Revision
-			if bytes.Compare(key.RawKey, lastRawKey) == 0 {
-				// replace with high revision itKv
-				rep.Kvs[len(rep.Kvs)-1] = itKv
-			} else {
-				rep.Kvs = append(rep.Kvs, itKv)
-			}
-		}
-		if bytes.Compare(key.RawKey, lastRawKey) != 0 {
-			// createRevision =
-			lastRawKey = key.RawKey
 		}
 
 		it.Next()
