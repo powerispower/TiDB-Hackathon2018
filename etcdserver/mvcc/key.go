@@ -37,45 +37,45 @@ func NewKey(storeBytes []byte) (*Key, error) {
 	key := &Key{}
 	removeCnt := 0
 	lastRemovePosition := -1
-	for i, value := range(storeBytes) {
+	for i, value := range storeBytes {
 		if value == removeBytes[0] {
 			removeCnt += 1
-			if 0 == len(storeBytes[lastRemovePosition + 1:i]) {
+			if 0 == len(storeBytes[lastRemovePosition+1:i]) {
 				return nil, fmt.Errorf("exist Key attributes bytes length = 0")
 			}
 			switch removeCnt {
 			case 1: // namepace
-				key.NameSpace = storeBytes[lastRemovePosition + 1:i]
+				key.NameSpace = storeBytes[lastRemovePosition+1 : i]
 			case 2: //rawkey
-				realKey, err := globalEncoder.Decode(storeBytes[lastRemovePosition + 1:i])
+				realKey, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1 : i])
 				if nil != err {
 					return nil, err
 				}
 				key.RawKey = realKey
 			case 3: //Revision
-				if 8 != len(storeBytes[lastRemovePosition + 1: i]) {
+				if 8 != len(storeBytes[lastRemovePosition+1:i]) {
 					return nil, fmt.Errorf("revision length != 8")
 				}
-				key.Revision = int64(binary.BigEndian.Uint64(storeBytes[lastRemovePosition + 1:i]))
+				key.Revision = int64(binary.BigEndian.Uint64(storeBytes[lastRemovePosition+1 : i]))
 			}
 			lastRemovePosition = i
 		}
 	}
-	if 8 != len(storeBytes[lastRemovePosition + 1:]) {
+	if 8 != len(storeBytes[lastRemovePosition+1:]) {
 		return nil, fmt.Errorf("flag length != 8")
 	}
 	// flag
-	key.Flag = int64(binary.BigEndian.Uint64(storeBytes[lastRemovePosition + 1:]))
+	key.Flag = int64(binary.BigEndian.Uint64(storeBytes[lastRemovePosition+1:]))
 	return key, nil
 }
 
 func (key *Key) ToBytes() []byte {
 	ret := make([]byte, len(key.NameSpace))
-	copy(ret, key.NameSpace);
+	copy(ret, key.NameSpace)
 	encodeRawKey := globalEncoder.Encode(key.RawKey)
 	ret = append(ret, removeBytes[0])
 	ret = append(ret, encodeRawKey...)
-	revisionBytes := make([]byte, 8);
+	revisionBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(revisionBytes, uint64(key.Revision))
 	ret = append(ret, removeBytes[0])
 	ret = append(ret, revisionBytes...)
