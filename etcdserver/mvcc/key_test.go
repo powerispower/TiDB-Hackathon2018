@@ -3,19 +3,32 @@ package mvcc
 import (
 	"reflect"
 	"testing"
+	"log"
 )
 
 func TestKey(t *testing.T) {
-	key := &Key{
-		RawKey:   []byte("hello"),
-		Revision: 12,
+	mockKey := &Key{}
+	mockKey.NameSpace = []byte("qqq")
+	mockKey.RawKey = []byte("bbb")
+	mockKey.Revision = 1
+	mockKey.Flag = 0
+
+	mockBytes := mockKey.ToBytes()
+	key, err := NewKey(mockBytes)
+	if nil != err {
+		log.Printf(err.Error())
+		t.Error("call NewKey failed")
 	}
-	b := key.ToBytes()
-	key2key, err := NewKey(b)
-	if err != nil {
-		t.Error(err)
+	if !reflect.DeepEqual(key.NameSpace, mockKey.NameSpace) {
+		t.Error("namespace check failed")
 	}
-	if !reflect.DeepEqual(key, key2key) {
-		t.Error("key != key2key")
+	if !reflect.DeepEqual(key.RawKey, mockKey.RawKey) {
+		t.Error("RawKey check failed")
+	}
+	if key.Revision != mockKey.Revision {
+		t.Error("revision check failed")
+	}
+	if key.Flag != mockKey.Flag {
+		t.Error("flag check failed")
 	}
 }
