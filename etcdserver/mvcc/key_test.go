@@ -1,17 +1,17 @@
 package mvcc
 
 import (
+	"log"
 	"reflect"
 	"testing"
-	"log"
 )
 
 func TestKey(t *testing.T) {
 	mockKey := &Key{}
-	mockKey.NameSpace = []byte("qqq")
-	mockKey.RawKey = []byte("bbb")
+	mockKey.NameSpace = []byte("/db")
+	mockKey.RawKey = []byte("foo")
 	mockKey.Revision = 1
-	mockKey.Flag = 0
+	mockKey.Flag = 2
 
 	mockBytes := mockKey.ToBytes()
 	key, err := NewKey(mockBytes)
