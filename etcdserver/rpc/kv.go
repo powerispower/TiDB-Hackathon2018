@@ -190,6 +190,51 @@ func checkPutRequest(r *pb.PutRequest) error {
 	return nil
 }
 
+func (s *kvServer) getLastRevision(rawKey []byte) (lastKey *mvcc.Key, err error) {
+	tx, err := s.store.Begin()
+	if err != nil {
+		return lastKey, err
+	}
+
+	var flatKey []byte = nil
+	key := &mvcc.Key{
+		NameSpace: DBNamespace,
+		RawKey:    rawKey,
+		Revision:  0,
+		Flag:      0,
+	}
+	flatKey = key.ToBytes()
+
+	var flatRangeEnd []byte = nil
+	rangeEnd := &mvcc.Key{
+		NameSpace: DBNamespace,
+		RawKey:    rawKey,
+		Revision:  1<<63 - 1,
+		Flag:      1<<63 - 1,
+	}
+	flatRangeEnd = rangeEnd.ToBytes()
+
+	// TODO: Use IterReverse()
+	it, err := tx.Iter(flatKey, flatRangeEnd)
+	if err != nil {
+		return lastKey, err
+	}
+	defer it.Close()
+
+	for it.Valid() {
+		lastKey, err = mvcc.NewKey(it.Key())
+		if err != nil {
+			return lastKey, err
+		}
+		log.Printf("it RawKey=%v, Revision=%v, Flag=%v\n",
+			string(lastKey.RawKey), lastKey.Revision, lastKey.Flag)
+		it.Next()
+	}
+	log.Printf("result: RawKey=%v, LastRevision=%v, Flag=%v\n",
+		string(lastKey.RawKey), lastKey.Revision, lastKey.Flag)
+	return lastKey, err
+}
+
 // func checkDeleteRequest(r *pb.DeleteRangeRequest) error {
 // 	if len(r.Key) == 0 {
 // 		return rpctypes.ErrGRPCEmptyKey
