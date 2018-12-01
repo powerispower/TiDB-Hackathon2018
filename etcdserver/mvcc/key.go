@@ -1,14 +1,13 @@
 package mvcc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"log"
 )
 
-const (
-	remove = "a"
-)
+var remove = []byte{0}
 
 var globalEncoder *Encoder
 var removeBytes []byte
@@ -31,8 +30,8 @@ type Key struct {
 }
 
 func NewKey(storeBytes []byte) (*Key, error) {
-	if len(storeBytes) < 16 {
-		return nil, fmt.Errorf("len(b) = %v < 16", len(storeBytes))
+	if len(storeBytes) <= 16*2 {
+		return nil, fmt.Errorf("len(b) = %v <= 16*2", len(storeBytes))
 	}
 	key := &Key{}
 	removeCnt := 0
@@ -45,43 +44,64 @@ func NewKey(storeBytes []byte) (*Key, error) {
 			}
 			switch removeCnt {
 			case 1: // namepace
-				key.NameSpace = storeBytes[lastRemovePosition+1 : i]
+				tmp, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1 : i])
+				if err != nil {
+					return nil, err
+				}
+				key.NameSpace = tmp
 			case 2: //rawkey
-				realKey, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1 : i])
+				tmp, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1 : i])
 				if nil != err {
 					return nil, err
 				}
-				key.RawKey = realKey
+
+				key.RawKey = tmp
 			case 3: //Revision
-				if 8 != len(storeBytes[lastRemovePosition+1:i]) {
-					return nil, fmt.Errorf("revision length != 8")
+				if len(storeBytes[lastRemovePosition+1:i]) != 16 {
+					return nil, fmt.Errorf("revision length != 16")
 				}
-				key.Revision = int64(binary.BigEndian.Uint64(storeBytes[lastRemovePosition+1 : i]))
+				tmp, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1 : i])
+				if nil != err {
+					return nil, err
+				}
+
+				key.Revision = int64(binary.BigEndian.Uint64(tmp))
 			}
 			lastRemovePosition = i
 		}
 	}
-	if 8 != len(storeBytes[lastRemovePosition+1:]) {
-		return nil, fmt.Errorf("flag length != 8")
+	if len(storeBytes[lastRemovePosition+1:]) != 16 {
+		return nil, fmt.Errorf("flag length != 16")
 	}
 	// flag
-	key.Flag = int64(binary.BigEndian.Uint64(storeBytes[lastRemovePosition+1:]))
+	tmp, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1:])
+	if nil != err {
+		return nil, err
+	}
+
+	key.Flag = int64(binary.BigEndian.Uint64(tmp))
 	return key, nil
 }
 
-func (key *Key) ToBytes() []byte {
-	ret := make([]byte, len(key.NameSpace))
-	copy(ret, key.NameSpace)
-	encodeRawKey := globalEncoder.Encode(key.RawKey)
-	ret = append(ret, removeBytes[0])
-	ret = append(ret, encodeRawKey...)
-	revisionBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(revisionBytes, uint64(key.Revision))
-	ret = append(ret, removeBytes[0])
-	ret = append(ret, revisionBytes...)
-	flagBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(flagBytes, uint64(key.Flag))
-	ret = append(ret, removeBytes[0])
-	ret = append(ret, flagBytes...)
-	return ret
+func (k *Key) ToBytes() []byte {
+	tmp := [][]byte{
+		k.NameSpace,
+		k.RawKey,
+	}
+
+	// + Revision
+	revision := make([]byte, 8)
+	binary.BigEndian.PutUint64(revision, uint64(k.Revision))
+	tmp = append(tmp, revision)
+
+	// + Flag
+	flag := make([]byte, 8)
+	binary.BigEndian.PutUint64(flag, uint64(k.Flag))
+	tmp = append(tmp, flag)
+
+	for i, flatBytes := range tmp {
+		tmp[i] = globalEncoder.Encode(flatBytes)
+	}
+
+	return bytes.Join(tmp, remove)
 }
