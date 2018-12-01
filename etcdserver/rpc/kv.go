@@ -3,15 +3,17 @@ package rpc
 import (
 	"bytes"
 	"context"
-	"github.com/pingcap/tidb/kv"
-	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
-	"github.com/powerispower/TiDB-Hackathon2018/etcdserver/mvcc"
-	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	"encoding/binary"
+	"errors"
 	"log"
 	"reflect"
 
+	"github.com/coreos/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
+	"github.com/pingcap/tidb/kv"
+	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
+	"github.com/powerispower/TiDB-Hackathon2018/etcdserver/mvcc"
 	goctx "golang.org/x/net/context"
 )
 
@@ -20,6 +22,7 @@ const (
 )
 
 var DBNamespace = []byte("/db")
+var SysNamespace = []byte("/sys")
 
 type kvServer struct {
 	store kv.Storage
@@ -164,7 +167,7 @@ func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, 
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Put key=%v, value=%v success\n", string(r.Key), string(r.Value))
+	log.Printf("Put key=%v, revision=%v,value=%v success\n", string(r.Key), key.Revision, string(r.Value))
 
 	return &pb.PutResponse{}, nil
 }
@@ -275,7 +278,114 @@ func (s *kvServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, 
 }
 
 func (s *kvServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.CompactionResponse, error) {
+	log.Printf("enter compact")
+	if err := checkCompactRequest(r); err != nil {
+		return nil, err
+	}
+	log.Printf("checkCompactRequest ok")
+
+	tx, err := s.store.Begin()
+	if err != nil {
+		return nil, err
+	}
+	// 判断给定的revison是否是未来的revison
+	nowRevision := int64(tx.StartTS()) // TODO: use tx.CurrentVersion
+	if r.Revision > nowRevision {
+		return nil, errors.New("required revision is a future revision")
+	}
+
+	compactPosKey := &mvcc.Key{
+		NameSpace: SysNamespace,
+		RawKey:    []byte("compactPos"),
+	}
+
+	compactPosValue, err := tx.Get(compactPosKey.ToBytes())
+
+	if err != nil && kv.IsErrNotFound(err) {
+		log.Printf("Compact first, r.Revision=%v\n", r.Revision)
+	} else if err == nil {
+		compactPosRevision := int64(binary.LittleEndian.Uint64(compactPosValue))
+		log.Printf("compactPosValue=%v, compactPosRevision:%v",
+			compactPosValue, compactPosRevision)
+
+		// 判断给定的revison是否已经compact
+		if r.Revision < compactPosRevision {
+			log.Printf("required revision=%v has been compacted, the compactPosRevision=%v",
+				r.Revision, compactPosRevision)
+			return nil, errors.New("required revision has been compacted")
+		}
+	} else {
+		log.Printf("err in tx.Get(compactPosKey.ToBytes())")
+		return nil, err
+	}
+	// update compactPos
+	revisionBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(revisionBytes, uint64(r.Revision))
+	err = tx.Set(compactPosKey.ToBytes(), revisionBytes)
+	if err != nil {
+		log.Printf("error in tx.Set(compactPosKey.ToBytes(), revisionBytes): %v", err)
+		return nil, err
+	}
+
+	log.Printf("judge r.Revision ok")
+
+	// get all key
+	minKey := &mvcc.Key{
+		NameSpace: DBNamespace,
+		RawKey:    []uint8{0}, // TODO confirm
+		Revision:  0,
+		Flag:      0,
+	}
+
+	it, err := tx.Iter(minKey.ToBytes(), nil)
+	if err != nil {
+		log.Printf("error in tx.Iter(minKey.ToBytes(), nil): %v", err)
+		return nil, err
+	}
+	defer it.Close()
+
+	preKey := &mvcc.Key{}
+	nowKey := &mvcc.Key{}
+	if it.Valid() {
+		preKey, err = mvcc.NewKey(it.Key())
+		if err != nil {
+			log.Printf("error in mvcc.NewKey(it.Key()), nil): %v", err)
+			return nil, err
+		}
+	} else {
+		log.Printf("it is valid!")
+	}
+	for it.Valid() {
+		it.Next()
+		if it.Valid() {
+			nowKey, err = mvcc.NewKey(it.Key())
+			if err != nil {
+				log.Printf("error in mvcc.NewKey(it.Key()), nil): %v", err)
+				return nil, err
+			}
+			if preKey.Revision < r.Revision && bytes.Compare(preKey.RawKey, nowKey.RawKey) == 0 {
+				tx.Delete(preKey.ToBytes())
+				// TODO delete confirm
+				log.Printf("delete Key=%v, Revision=%v\n",
+					string(preKey.RawKey), preKey.Revision)
+			}
+			preKey = nowKey
+		}
+	}
+
+	err = tx.Commit(goctx.Background())
+	if err != nil {
+		log.Printf("error in tx.Commit(goctx.Background()): %v", err)
+		tx.Rollback()
+		return nil, err
+	}
+
 	return &pb.CompactionResponse{}, nil
+}
+
+func checkCompactRequest(r *pb.CompactionRequest) error {
+	// TODO
+	return nil
 }
 
 func checkRangeRequest(r *pb.RangeRequest) error {
