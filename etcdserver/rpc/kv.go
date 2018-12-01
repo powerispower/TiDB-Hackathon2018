@@ -177,14 +177,14 @@ func (s *kvServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	beginKey := &mvcc.Key {
+	beginKey := &mvcc.Key{
 		NameSpace: DBNamespace,
-		RawKey:	   r.Key,
+		RawKey:    r.Key,
 		Revision:  0,
 		Flag:      0,
 	}
 	flatBeginKey := beginKey.ToBytes()
-	endKey := &mvcc.Key {
+	endKey := &mvcc.Key{
 		NameSpace: DBNamespace,
 		RawKey:    r.Key,
 		Revision:  1<<63 - 1,
@@ -234,27 +234,30 @@ func (s *kvServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*
 		}
 		it.Next()
 	}
-	rep := &pb.DeleteRangeResponse {
+	rep := &pb.DeleteRangeResponse{
 		Header:  &pb.ResponseHeader{},
 		Deleted: int64(len(keyMap)),
 	}
 	for stringKey, keyMapValue := range keyMap {
 		log.Printf("delete key=%v", stringKey)
-		deleteKey := &mvcc.Key {
+		deleteKey := &mvcc.Key{
 			NameSpace: DBNamespace,
 			RawKey:    []byte(stringKey),
 			Revision:  int64(tx.StartTS()),
 			Flag:      Tombstone,
 		}
-		tx.Set(deleteKey.ToBytes(), []byte("124"))
+		err := tx.Set(deleteKey.ToBytes(), []byte("124"))
+		if err != nil {
+			return nil, err
+		}
 		// log.Printf("it Key=%v, Revision=%v, Flag=%v,",
 		// 	string(deleteKey.RawKey), deleteKey.Revision, deleteKey.Flag, deleteKey.ToBytes())
 		if r.PrevKv {
 			keyValue := &mvccpb.KeyValue{
-				Key:         	[]byte(stringKey),
-				Value:       	valueMap[stringKey],
-				CreateRevision:	keyMapValue["createRevision"],
-				ModRevision: 	keyMapValue["modRevision"],
+				Key:            []byte(stringKey),
+				Value:          valueMap[stringKey],
+				CreateRevision: keyMapValue["createRevision"],
+				ModRevision:    keyMapValue["modRevision"],
 			}
 			rep.PrevKvs = append(rep.PrevKvs, keyValue)
 		}
