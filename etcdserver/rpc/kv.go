@@ -1,15 +1,19 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
 	"github.com/pingcap/tidb/kv"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
+	"github.com/powerispower/TiDB-Hackathon2018/etcdserver/mvcc"
 	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
 	goctx "golang.org/x/net/context"
 	"log"
 )
+
+var DBNamespace = []byte("/db")
 
 type kvServer struct {
 	store kv.Storage
@@ -28,17 +32,58 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Range Key=%v, RangeEnd=%v, Limit=%v, StartTS=%v\n",
-		string(r.Key), string(r.RangeEnd), r.Limit, tx.StartTS())
-	it, err := tx.Iter(r.Key, []byte(""))
+
+	var flatKey []byte = nil
+	if bytes.Compare(r.Key, []byte("\000")) != 0 {
+		key := &mvcc.Key{
+			NameSpace: DBNamespace,
+			RawKey:    r.Key,
+			Revision:  0,
+			Flag:      0,
+		}
+		flatKey = key.ToBytes()
+	}
+	var flatRangeEnd []byte = nil
+	if bytes.Compare(r.RangeEnd, []byte("\000")) != 0 {
+		rangeEnd := &mvcc.Key{
+			NameSpace: DBNamespace,
+			RawKey:    r.RangeEnd,
+			Revision:  1<<63 - 1,
+			Flag:      1<<63 - 1,
+		}
+		flatRangeEnd = rangeEnd.ToBytes()
+	}
+
+	log.Printf("Range Key=%v, RangeEnd=%v, Limit=%v, StartTS=%v, flatKey=%v, flatRangeEnd=%v\n",
+		string(r.Key), string(r.RangeEnd), r.Limit, tx.StartTS(),
+		flatKey, flatRangeEnd)
+	it, err := tx.Iter(flatKey, flatRangeEnd)
 	if err != nil {
 		return nil, err
 	}
 	defer it.Close()
 	rep := &pb.RangeResponse{}
+	lastRawKey := []byte{}
 	for it.Valid() {
-		log.Printf("it Key=%v, Value=%v\n", string(it.Key()), string(it.Value()))
-		rep.Kvs = append(rep.Kvs, &mvccpb.KeyValue{Key: it.Key(), Value: it.Value()})
+		key, err := mvcc.NewKey(it.Key())
+		if err != nil {
+			return nil, err
+		}
+		itKv := &mvccpb.KeyValue{
+			Key:   key.RawKey,
+			Value: it.Value(),
+		}
+		log.Printf("it Key=%v, Value=%v, Revision=%v\n",
+			string(key.RawKey), string(itKv.Value), key.Revision)
+
+		if bytes.Compare(key.RawKey, lastRawKey) == 0 {
+			// replace with high revision itKv
+			rep.Kvs[len(rep.Kvs)-1] = itKv
+		} else {
+			rep.Kvs = append(rep.Kvs, itKv)
+			lastRawKey = key.RawKey
+		}
+
 		it.Next()
 	}
 	return rep, nil
@@ -54,7 +99,15 @@ func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, 
 		return nil, err
 	}
 
-	err = tx.Set(r.Key, r.Value)
+	key := &mvcc.Key{
+		NameSpace: DBNamespace,
+		RawKey:    r.Key,
+		Revision:  int64(tx.StartTS()),
+		Flag:      0,
+	}
+	flatKey := key.ToBytes()
+
+	err = tx.Set(flatKey, r.Value)
 	if err != nil {
 		return nil, err
 	}
