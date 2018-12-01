@@ -43,17 +43,19 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 	}
 
 	var flatKey []byte = nil
-	if bytes.Compare(r.Key, []byte("\000")) != 0 {
+	if bytes.Compare(r.Key, []byte("\000")) == 0 {
+		flatKey = nil
+	} else {
 		key := &mvcc.Key{
 			NameSpace: DBNamespace,
 			RawKey:    r.Key,
-			Revision:  r.Revision,
+			Revision:  0,
 			Flag:      0,
 		}
 		flatKey = key.ToBytes()
 	}
 	var flatRangeEnd []byte = nil
-	if len(r.RangeEnd) == 0 {
+	if r.RangeEnd == nil || len(r.RangeEnd) == 0 {
 		rangeEnd := &mvcc.Key{
 			NameSpace: DBNamespace,
 			RawKey:    r.Key,
@@ -61,7 +63,9 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 			Flag:      1<<63 - 1,
 		}
 		flatRangeEnd = rangeEnd.ToBytes()
-	} else if bytes.Compare(r.RangeEnd, []byte("\000")) != 0 {
+	} else if bytes.Compare(r.RangeEnd, []byte("\000")) == 0 {
+		flatRangeEnd = nil
+	} else {
 		rangeEnd := &mvcc.Key{
 			NameSpace: DBNamespace,
 			RawKey:    r.RangeEnd,
@@ -77,6 +81,7 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		return nil, err
 	}
 	defer it.Close()
+
 	rep := &pb.RangeResponse{
 		Header: &pb.ResponseHeader{},
 	}
