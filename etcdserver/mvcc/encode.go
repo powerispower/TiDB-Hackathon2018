@@ -2,6 +2,7 @@ package mvcc
 
 import (
 	"fmt"
+	"log"
 )
 
 type Encoder struct {
