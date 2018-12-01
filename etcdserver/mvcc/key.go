@@ -30,8 +30,8 @@ type Key struct {
 }
 
 func NewKey(storeBytes []byte) (*Key, error) {
-	if len(storeBytes) < 16*2 {
-		return nil, fmt.Errorf("len(b) = %v < 16", len(storeBytes))
+	if len(storeBytes) <= 16*2 {
+		return nil, fmt.Errorf("len(b) = %v <= 16*2", len(storeBytes))
 	}
 	key := &Key{}
 	removeCnt := 0
@@ -48,7 +48,6 @@ func NewKey(storeBytes []byte) (*Key, error) {
 				if err != nil {
 					return nil, err
 				}
-
 				key.NameSpace = tmp
 			case 2: //rawkey
 				tmp, err := globalEncoder.Decode(storeBytes[lastRemovePosition+1 : i])
