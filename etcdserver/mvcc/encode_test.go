@@ -7,14 +7,14 @@ import (
 )
 
 func TestEncoder(t *testing.T) {
-	remove := []byte{1, 3}
+	remove := []byte{0}
 
 	e, err := NewEncoder(remove)
 	if err != nil {
 		t.Error(err)
 	}
 
-	raw := []byte{0, 1, 1, 2, 3, 5, 8}
+	raw := []byte("/db")
 	encode := e.Encode(raw)
 	log.Printf("raw=%v, encode=%v", raw, encode)
 
