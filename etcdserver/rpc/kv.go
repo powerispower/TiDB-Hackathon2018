@@ -3,15 +3,20 @@ package rpc
 import (
 	"bytes"
 	"context"
-	"log"
-
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
 	"github.com/pingcap/tidb/kv"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver/mvcc"
 	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
+	"log"
+	"reflect"
+
+	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
+	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
 	goctx "golang.org/x/net/context"
+)
+
+const (
+	Tombstone = int64(1)
 )
 
 var DBNamespace = []byte("/db")
@@ -29,6 +34,9 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		return nil, err
 	}
 
+	log.Printf("Range Key=%v, RangeEnd=%v, Limit=%v, Revision=%v",
+		string(r.Key), string(r.RangeEnd), r.Limit, r.Revision)
+
 	tx, err := s.store.Begin()
 	if err != nil {
 		return nil, err
@@ -39,13 +47,21 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		key := &mvcc.Key{
 			NameSpace: DBNamespace,
 			RawKey:    r.Key,
-			Revision:  0,
+			Revision:  r.Revision,
 			Flag:      0,
 		}
 		flatKey = key.ToBytes()
 	}
 	var flatRangeEnd []byte = nil
-	if bytes.Compare(r.RangeEnd, []byte("\000")) != 0 {
+	if len(r.RangeEnd) == 0 {
+		rangeEnd := &mvcc.Key{
+			NameSpace: DBNamespace,
+			RawKey:    r.Key,
+			Revision:  1<<63 - 1,
+			Flag:      1<<63 - 1,
+		}
+		flatRangeEnd = rangeEnd.ToBytes()
+	} else if bytes.Compare(r.RangeEnd, []byte("\000")) != 0 {
 		rangeEnd := &mvcc.Key{
 			NameSpace: DBNamespace,
 			RawKey:    r.RangeEnd,
@@ -55,38 +71,58 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		flatRangeEnd = rangeEnd.ToBytes()
 	}
 
-	log.Printf("Range Key=%v, RangeEnd=%v, Limit=%v, StartTS=%v, flatKey=%v, flatRangeEnd=%v\n",
-		string(r.Key), string(r.RangeEnd), r.Limit, tx.StartTS(),
-		flatKey, flatRangeEnd)
+	log.Printf("flatKey=%v, flatRangeEnd=%v\n", flatKey, flatRangeEnd)
 	it, err := tx.Iter(flatKey, flatRangeEnd)
 	if err != nil {
 		return nil, err
 	}
 	defer it.Close()
-	rep := &pb.RangeResponse{}
+	rep := &pb.RangeResponse{
+		Header: &pb.ResponseHeader{},
+	}
 	lastRawKey := []byte{}
 	for it.Valid() {
 		key, err := mvcc.NewKey(it.Key())
 		if err != nil {
 			return nil, err
 		}
+
 		itKv := &mvccpb.KeyValue{
-			Key:   key.RawKey,
-			Value: it.Value(),
+			Key:         key.RawKey,
+			Value:       it.Value(),
+			ModRevision: key.Revision,
 		}
 		log.Printf("it Key=%v, Value=%v, Revision=%v\n",
 			string(key.RawKey), string(itKv.Value), key.Revision)
 
-		if bytes.Compare(key.RawKey, lastRawKey) == 0 {
-			// replace with high revision itKv
-			rep.Kvs[len(rep.Kvs)-1] = itKv
+		if key.Flag == Tombstone {
+			// if it is tombstone, remove all this key old revision
+			i := len(rep.Kvs) - 1
+			for ; i >= 0; i-- {
+				if !reflect.DeepEqual(rep.Kvs[i].Key, itKv.Key) {
+					break
+				}
+			}
+			rep.Kvs = rep.Kvs[:i+1]
+		} else if r.Revision > 0 {
+			// if user specified Revision
+			if key.Revision >= r.Revision {
+				rep.Kvs = append(rep.Kvs, itKv)
+			}
 		} else {
-			rep.Kvs = append(rep.Kvs, itKv)
-			lastRawKey = key.RawKey
+			// if not, Keep last one Revision
+			if bytes.Compare(key.RawKey, lastRawKey) == 0 {
+				// replace with high revision itKv
+				rep.Kvs[len(rep.Kvs)-1] = itKv
+			} else {
+				rep.Kvs = append(rep.Kvs, itKv)
+			}
 		}
+		lastRawKey = key.RawKey
 
 		it.Next()
 	}
+
 	return rep, nil
 }
 
