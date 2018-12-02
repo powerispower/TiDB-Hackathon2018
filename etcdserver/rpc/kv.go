@@ -45,6 +45,17 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		return nil, err
 	}
 
+	if r.Revision > 0 {
+		// 指定版本的情况下判断给定的revision是否已经compact
+		isCompacted, err := IsCompacted(r.Revision, tx)
+		if err != nil {
+			return nil, err
+		}
+		if isCompacted {
+			return nil, errors.New("required revision has been compacted")
+		}
+	}
+
 	var flatKey []byte = nil
 	if bytes.Compare(r.Key, []byte("\000")) == 0 {
 		flatKey = nil
@@ -96,6 +107,10 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		key, err := mvcc.NewKey(it.Key())
 		if err != nil {
 			return nil, err
+		}
+
+		if !IsNameSpace(DBNamespace, key) {
+			break
 		}
 
 		itKv := &mvccpb.KeyValue{
@@ -214,6 +229,9 @@ func (s *kvServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*
 		if err != nil {
 			return nil, err
 		}
+		if !IsNameSpace(DBNamespace, tmpKey) {
+			break
+		}
 		stringKey := string(tmpKey.RawKey)
 		if tmpKey.Flag == 0 {
 			oldValue, ok := keyMap[stringKey]
@@ -294,31 +312,20 @@ func (s *kvServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.Co
 		return nil, errors.New("required revision is a future revision")
 	}
 
+	// 判断给定的revision是否已经compact
+	isCompacted, err := IsCompacted(r.Revision, tx)
+	if err != nil {
+		return nil, err
+	}
+	if isCompacted {
+		return nil, errors.New("required revision has been compacted")
+	}
+
+	// update compactPos
 	compactPosKey := &mvcc.Key{
 		NameSpace: SysNamespace,
 		RawKey:    []byte("compactPos"),
 	}
-
-	compactPosValue, err := tx.Get(compactPosKey.ToBytes())
-
-	if err != nil && kv.IsErrNotFound(err) {
-		log.Printf("Compact first, r.Revision=%v\n", r.Revision)
-	} else if err == nil {
-		compactPosRevision := int64(binary.LittleEndian.Uint64(compactPosValue))
-		log.Printf("compactPosValue=%v, compactPosRevision:%v",
-			compactPosValue, compactPosRevision)
-
-		// 判断给定的revison是否已经compact
-		if r.Revision < compactPosRevision {
-			log.Printf("required revision=%v has been compacted, the compactPosRevision=%v",
-				r.Revision, compactPosRevision)
-			return nil, errors.New("required revision has been compacted")
-		}
-	} else {
-		log.Printf("err in tx.Get(compactPosKey.ToBytes())")
-		return nil, err
-	}
-	// update compactPos
 	revisionBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(revisionBytes, uint64(r.Revision))
 	err = tx.Set(compactPosKey.ToBytes(), revisionBytes)
@@ -363,7 +370,12 @@ func (s *kvServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.Co
 				log.Printf("error in mvcc.NewKey(it.Key()), nil): %v", err)
 				return nil, err
 			}
-			if preKey.Revision < r.Revision && bytes.Compare(preKey.RawKey, nowKey.RawKey) == 0 {
+			if !IsNameSpace(DBNamespace, nowKey) {
+				break
+			}
+			if preKey.Revision < r.Revision &&
+				bytes.Compare(preKey.RawKey, nowKey.RawKey) == 0 &&
+				nowKey.Revision <= r.Revision {
 				tx.Delete(preKey.ToBytes())
 				// TODO delete confirm
 				log.Printf("delete Key=%v, Revision=%v\n",
@@ -458,6 +470,36 @@ func checkDeleteRequest(r *pb.DeleteRangeRequest) error {
 		return rpctypes.ErrGRPCEmptyKey
 	}
 	return nil
+}
+
+func IsNameSpace(nameSpace []byte, key *mvcc.Key) bool {
+	// 判断给定的key是否属于nameSpace
+	return bytes.Compare(key.NameSpace, nameSpace) == 0
+}
+
+func IsCompacted(revision int64, tx kv.Transaction) (bool, error) {
+	// 判断给定的revision是否已经compact
+
+	compactPosKey := &mvcc.Key{
+		NameSpace: SysNamespace,
+		RawKey:    []byte("compactPos"),
+	}
+
+	compactPosValue, err := tx.Get(compactPosKey.ToBytes())
+
+	if err != nil && kv.IsErrNotFound(err) {
+		log.Printf("Not found compactPos before revision=%v\n", revision)
+		return false, nil
+	} else if err == nil {
+		compactPosRevision := int64(binary.LittleEndian.Uint64(compactPosValue))
+		log.Printf("compactPosValue=%v, compactPosRevision:%v, revision=%v",
+			compactPosValue, compactPosRevision, revision)
+
+		return revision < compactPosRevision, nil
+	} else {
+		log.Printf("err in IsCompacted:tx.Get(compactPosKey.ToBytes())")
+		return false, err
+	}
 }
 
 // func checkTxnRequest(r *pb.TxnRequest, maxTxnOps int) error {
