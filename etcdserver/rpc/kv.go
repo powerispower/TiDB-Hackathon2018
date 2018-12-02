@@ -332,7 +332,7 @@ func (s *kvServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.Co
 	// get all key
 	minKey := &mvcc.Key{
 		NameSpace: DBNamespace,
-		RawKey:    []uint8{0}, // TODO confirm
+		RawKey:    []byte(""), // TODO confirm
 		Revision:  0,
 		Flag:      0,
 	}
