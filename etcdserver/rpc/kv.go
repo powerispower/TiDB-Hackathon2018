@@ -23,6 +23,7 @@ const (
 
 var DBNamespace = []byte("/db")
 var SysNamespace = []byte("/sys")
+var TrashNamespace = []byte("/trash")
 
 type kvServer struct {
 	store kv.Storage
@@ -344,32 +345,54 @@ func (s *kvServer) Compact(ctx context.Context, r *pb.CompactionRequest) (*pb.Co
 	}
 	defer it.Close()
 
-	preKey := &mvcc.Key{}
-	nowKey := &mvcc.Key{}
-	if it.Valid() {
+	if !it.Valid() {
+		// just for debug
+		log.Printf("it is invalid!")
+	}
+
+	var preKey, nowKey *mvcc.Key
+	var preValue, nowValue []byte
+	nowValue = []byte{}
+	// var nowValue []byte
+
+	for it.Valid() {
 		preKey, err = mvcc.NewKey(it.Key())
 		if err != nil {
-			log.Printf("error in mvcc.NewKey(it.Key()), nil): %v", err)
+			log.Printf("error in preKey = mvcc.NewKey(it.Key()): %v", err)
 			return nil, err
 		}
-	} else {
-		log.Printf("it is valid!")
-	}
-	for it.Valid() {
+		preValue = it.Value()
+
 		it.Next()
-		if it.Valid() {
-			nowKey, err = mvcc.NewKey(it.Key())
+		if !it.Valid() {
+			break
+		}
+
+		nowKey, err = mvcc.NewKey(it.Key())
+		if err != nil {
+			log.Printf("error in nowKey = mvcc.NewKey(it.Key()): %v", err)
+			return nil, err
+		}
+		nowValue = it.Value()
+
+		if bytes.Compare(preKey.NameSpace, DBNamespace) == 1 ||
+			bytes.Compare(nowKey.NameSpace, DBNamespace) == 1 {
+			break
+		}
+
+		if preKey.Revision < r.Revision && bytes.Compare(preKey.RawKey, nowKey.RawKey) == 0 {
+			tx.Delete(preKey.ToBytes())
+			log.Printf("delete Key=%v, Revision=%v\n",
+				string(preKey.RawKey), preKey.Revision)
+
+			preKey.NameSpace = TrashNamespace
+			log.Printf("put to trash, rawKey=%v, revision=%v, value=%v, namespace=%v\n",
+				string(preKey.RawKey), preKey.Revision, string(preValue), string(preKey.NameSpace))
+			err = tx.Set(preKey.ToBytes(), preValue)
 			if err != nil {
-				log.Printf("error in mvcc.NewKey(it.Key()), nil): %v", err)
+				log.Printf("put to trash error: %v", err)
 				return nil, err
 			}
-			if preKey.Revision < r.Revision && bytes.Compare(preKey.RawKey, nowKey.RawKey) == 0 {
-				tx.Delete(preKey.ToBytes())
-				// TODO delete confirm
-				log.Printf("delete Key=%v, Revision=%v\n",
-					string(preKey.RawKey), preKey.Revision)
-			}
-			preKey = nowKey
 		}
 	}
 
