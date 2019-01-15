@@ -3,14 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
-	"github.com/pingcap/tidb/store/tikv"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver/rpc"
+	"github.com/pingcap/tidb/store/tikv"
 	"google.golang.org/grpc"
 	"log"
 	"net"
 	"os"
+
+	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 )
 
 var (
@@ -23,8 +24,7 @@ func main() {
 	driver := tikv.Driver{}
 	store, err := driver.Open(fmt.Sprintf("tikv://%s", *pdURL))
 	if err != nil {
-		log.Println(err)
-		os.Exit(1)
+		log.Fatalf("%v", err)
 	}
 
 	etcdServer := etcdserver.NewServer(store)
@@ -36,5 +36,7 @@ func main() {
 	grpcServer := grpc.NewServer()
 	pb.RegisterKVServer(grpcServer, rpc.NewKVServer(etcdServer))
 	pb.RegisterMaintenanceServer(grpcServer, rpc.NewMaintenanceServer(etcdServer))
+	pb.RegisterClusterServer(grpcServer, rpc.NewClusterServer(etcdServer))
+	pb.RegisterWatchServer(grpcServer, rpc.NewWatchServer(etcdServer))
 	grpcServer.Serve(lis)
 }

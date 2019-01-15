@@ -7,8 +7,6 @@ import (
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver/mvcc"
 	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
-	"log"
-	"reflect"
 
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	mvccpb "github.com/coreos/etcd/mvcc/mvccpb"
@@ -18,8 +16,6 @@ import (
 const (
 	Tombstone = int64(1)
 )
-
-var DBNamespace = []byte("/db")
 
 type kvServer struct {
 	store kv.Storage
@@ -34,107 +30,93 @@ func (s *kvServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResp
 		return nil, err
 	}
 
-	log.Printf("Range Key=%v, RangeEnd=%v, Limit=%v, Revision=%v",
-		string(r.Key), string(r.RangeEnd), r.Limit, r.Revision)
+	var flatKey []byte = nil
+	if r.Key == nil || bytes.Compare(r.Key, []byte("\000")) == 0 {
+		// r.Key == "\000" means NamespaceBegin
+		flatKey = (&mvcc.DataKey{}).NamespaceBegin()
+	} else {
+		// keyBegin
+		flatKey = (&mvcc.DataKey{
+			RawKey: r.Key,
+		}).ToFlatKey()
+	}
+	var flatRangeEnd []byte = nil
+	if r.RangeEnd == nil || bytes.Compare(r.RangeEnd, []byte("\000")) == 0 {
+		// Range all keys >= r.Key
+		flatRangeEnd = (&mvcc.DataKey{}).NamespaceEnd()
+	} else {
+		// keyEnd
+		flatRangeEnd = (&mvcc.DataKey{
+			RawKey:   r.RangeEnd,
+			Revision: 0,
+		}).ToFlatKey()
+	}
 
 	tx, err := s.store.Begin()
 	if err != nil {
 		return nil, err
 	}
 
-	var flatKey []byte = nil
-	if bytes.Compare(r.Key, []byte("\000")) == 0 {
-		flatKey = nil
-	} else {
-		key := &mvcc.Key{
-			NameSpace: DBNamespace,
-			RawKey:    r.Key,
-			Revision:  0,
-			Flag:      0,
-		}
-		flatKey = key.ToBytes()
-	}
-	var flatRangeEnd []byte = nil
-	if r.RangeEnd == nil || len(r.RangeEnd) == 0 {
-		rangeEnd := &mvcc.Key{
-			NameSpace: DBNamespace,
-			RawKey:    r.Key,
-			Revision:  1<<63 - 1,
-			Flag:      1<<63 - 1,
-		}
-		flatRangeEnd = rangeEnd.ToBytes()
-	} else if bytes.Compare(r.RangeEnd, []byte("\000")) == 0 {
-		flatRangeEnd = nil
-	} else {
-		rangeEnd := &mvcc.Key{
-			NameSpace: DBNamespace,
-			RawKey:    r.RangeEnd,
-			Revision:  1<<63 - 1,
-			Flag:      1<<63 - 1,
-		}
-		flatRangeEnd = rangeEnd.ToBytes()
-	}
-
-	// log.Printf("flatKey=%v, flatRangeEnd=%v\n", flatKey, flatRangeEnd)
 	it, err := tx.Iter(flatKey, flatRangeEnd)
 	if err != nil {
 		return nil, err
 	}
 	defer it.Close()
 
-	rep := &pb.RangeResponse{
+	resp := &pb.RangeResponse{
 		Header: &pb.ResponseHeader{
 			Revision: int64(tx.StartTS()),
 		},
 	}
 	lastRawKey := []byte{}
-	// createRevision := 0
+	var createRevision int64 = 0
 	for it.Valid() {
-		key, err := mvcc.NewKey(it.Key())
-		if err != nil {
+		itKey := &mvcc.DataKey{}
+		if err := itKey.ParseFromFlatKey(it.Key()); err != nil {
 			return nil, err
 		}
 
-		itKv := &mvccpb.KeyValue{
-			Key:         key.RawKey,
-			Value:       it.Value(),
-			ModRevision: key.Revision,
-		}
-		log.Printf("it Key=%v, Value=%v, Revision=%v, Flag=%v\n",
-			string(key.RawKey), string(itKv.Value), key.Revision, key.Flag)
-
-		if r.Revision > 0 && key.Revision > r.Revision {
+		if r.Revision > 0 && int64(itKey.Revision) > r.Revision {
 			// if user specify revision
 			// user can't see whaterver > r.Revision
 		} else {
-			if key.Flag == Tombstone {
-				// if it is tombstone, remove all this key old revision
-				i := len(rep.Kvs) - 1
+			if itKey.Flag == mvcc.DataFlagTombstone {
+				// if flag is tombstone, remove all old revision
+				i := len(resp.Kvs) - 1
 				for ; i >= 0; i-- {
-					if !reflect.DeepEqual(rep.Kvs[i].Key, itKv.Key) {
+					if bytes.Compare(resp.Kvs[i].Key, itKey.RawKey) != 0 {
 						break
 					}
 				}
-				rep.Kvs = rep.Kvs[:i+1]
-			} else {
-				if bytes.Compare(key.RawKey, lastRawKey) == 0 {
-					// replace with high revision itKv
-					rep.Kvs[len(rep.Kvs)-1] = itKv
-				} else {
-					rep.Kvs = append(rep.Kvs, itKv)
-				}
-			}
+				resp.Kvs = resp.Kvs[:i+1]
 
-			if bytes.Compare(key.RawKey, lastRawKey) != 0 {
-				// createRevision =
-				lastRawKey = key.RawKey
+				lastRawKey = []byte{}
+				createRevision = 0
+			} else {
+				itKv := &mvccpb.KeyValue{
+					Key:         itKey.RawKey,
+					Value:       it.Value(),
+					ModRevision: int64(itKey.Revision),
+				}
+
+				if bytes.Compare(itKey.RawKey, lastRawKey) == 0 {
+					itKv.CreateRevision = createRevision
+					// replace with high revision itKv
+					resp.Kvs[len(resp.Kvs)-1] = itKv
+				} else {
+					itKv.CreateRevision = int64(itKey.Revision)
+					resp.Kvs = append(resp.Kvs, itKv)
+
+					lastRawKey = itKv.Key
+					createRevision = itKv.CreateRevision
+				}
 			}
 		}
 
 		it.Next()
 	}
 
-	return rep, nil
+	return resp, nil
 }
 
 func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {
@@ -147,13 +129,11 @@ func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, 
 		return nil, err
 	}
 
-	key := &mvcc.Key{
-		NameSpace: DBNamespace,
-		RawKey:    r.Key,
-		Revision:  int64(tx.StartTS()),
-		Flag:      0,
-	}
-	flatKey := key.ToBytes()
+	flatKey := (&mvcc.DataKey{
+		RawKey:   r.Key,
+		Revision: tx.StartTS(),
+		Flag:     mvcc.DataFlagAdd,
+	}).ToFlatKey()
 
 	err = tx.Set(flatKey, r.Value)
 	if err != nil {
@@ -164,7 +144,6 @@ func (s *kvServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, 
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Put key=%v, value=%v success\n", string(r.Key), string(r.Value))
 
 	return &pb.PutResponse{}, nil
 }
@@ -173,101 +152,50 @@ func (s *kvServer) DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*
 	if err := checkDeleteRequest(r); err != nil {
 		return nil, err
 	}
+
+	rangeReq := &pb.RangeRequest{
+		Key:      r.Key,
+		RangeEnd: r.RangeEnd,
+	}
+
+	rangeResp, err := s.Range(ctx, rangeReq)
+	if err != nil {
+		return nil, err
+	}
+
 	tx, err := s.store.Begin()
 	if err != nil {
 		return nil, err
 	}
-	beginKey := &mvcc.Key{
-		NameSpace: DBNamespace,
-		RawKey:    r.Key,
-		Revision:  0,
-		Flag:      0,
+
+	resp := &pb.DeleteRangeResponse{
+		Header: &pb.ResponseHeader{
+			Revision: int64(tx.StartTS()),
+		},
+		PrevKvs: []*mvccpb.KeyValue{},
 	}
-	flatBeginKey := beginKey.ToBytes()
-	endKey := &mvcc.Key{
-		NameSpace: DBNamespace,
-		RawKey:    r.Key,
-		Revision:  1<<63 - 1,
-		Flag:      1<<63 - 1,
-	}
-	flatEndKey := endKey.ToBytes()
-	if r.RangeEnd != nil && len(flatEndKey) != 0 {
-		if bytes.Compare(r.RangeEnd, []byte("\000")) == 0 {
-			flatEndKey = nil
-		} else {
-			endKey.RawKey = r.RangeEnd
-			flatEndKey = endKey.ToBytes()
+	for _, kv := range rangeResp.Kvs {
+		tombstone := &mvcc.DataKey{
+			RawKey:   kv.Key,
+			Revision: tx.StartTS(),
+			Flag:     mvcc.DataFlagTombstone,
 		}
-	}
-	it, err := tx.Iter(flatBeginKey, flatEndKey)
-	if err != nil {
-		return nil, err
-	}
-	defer it.Close()
-	keyMap := make(map[string]map[string]int64)
-	valueMap := make(map[string][]byte)
-	for it.Valid() {
-		tmpKey, err := mvcc.NewKey(it.Key())
-		if err != nil {
+
+		if err := tx.Set(tombstone.ToFlatKey(), []byte("tombstone")); err != nil {
 			return nil, err
 		}
-		stringKey := string(tmpKey.RawKey)
-		if tmpKey.Flag == 0 {
-			oldValue, ok := keyMap[stringKey]
-			newValue := make(map[string]int64)
-			if ok {
-				newValue["createRevision"] = oldValue["createRevision"]
-				newValue["modRevision"] = tmpKey.Revision
-			} else {
-				newValue["createRevision"] = tmpKey.Revision
-				newValue["modRevision"] = tmpKey.Revision
-			}
-			keyMap[stringKey] = newValue
-			if r.PrevKv {
-				valueMap[stringKey] = it.Value()
-			}
-		} else if tmpKey.Flag == Tombstone {
-			delete(keyMap, stringKey)
-			if r.PrevKv {
-				delete(valueMap, stringKey)
-			}
-		}
-		it.Next()
-	}
-	rep := &pb.DeleteRangeResponse{
-		Header:  &pb.ResponseHeader{},
-		Deleted: int64(len(keyMap)),
-	}
-	for stringKey, keyMapValue := range keyMap {
-		log.Printf("delete key=%v", stringKey)
-		deleteKey := &mvcc.Key{
-			NameSpace: DBNamespace,
-			RawKey:    []byte(stringKey),
-			Revision:  int64(tx.StartTS()),
-			Flag:      Tombstone,
-		}
-		err := tx.Set(deleteKey.ToBytes(), []byte("124"))
-		if err != nil {
-			return nil, err
-		}
-		// log.Printf("it Key=%v, Revision=%v, Flag=%v,",
-		// 	string(deleteKey.RawKey), deleteKey.Revision, deleteKey.Flag, deleteKey.ToBytes())
+
 		if r.PrevKv {
-			keyValue := &mvccpb.KeyValue{
-				Key:            []byte(stringKey),
-				Value:          valueMap[stringKey],
-				CreateRevision: keyMapValue["createRevision"],
-				ModRevision:    keyMapValue["modRevision"],
-			}
-			rep.PrevKvs = append(rep.PrevKvs, keyValue)
+			resp.PrevKvs = append(resp.PrevKvs, kv)
 		}
 	}
+
 	err = tx.Commit(goctx.Background())
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("delete success")
-	return rep, nil
+
+	return resp, nil
 }
 
 func (s *kvServer) Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error) {
@@ -296,51 +224,6 @@ func checkPutRequest(r *pb.PutRequest) error {
 		return rpctypes.ErrGRPCLeaseProvided
 	}
 	return nil
-}
-
-func (s *kvServer) getLastRevision(rawKey []byte) (lastKey *mvcc.Key, err error) {
-	tx, err := s.store.Begin()
-	if err != nil {
-		return lastKey, err
-	}
-
-	var flatKey []byte = nil
-	key := &mvcc.Key{
-		NameSpace: DBNamespace,
-		RawKey:    rawKey,
-		Revision:  0,
-		Flag:      0,
-	}
-	flatKey = key.ToBytes()
-
-	var flatRangeEnd []byte = nil
-	rangeEnd := &mvcc.Key{
-		NameSpace: DBNamespace,
-		RawKey:    rawKey,
-		Revision:  1<<63 - 1,
-		Flag:      1<<63 - 1,
-	}
-	flatRangeEnd = rangeEnd.ToBytes()
-
-	// TODO: Use IterReverse()
-	it, err := tx.Iter(flatKey, flatRangeEnd)
-	if err != nil {
-		return lastKey, err
-	}
-	defer it.Close()
-
-	for it.Valid() {
-		lastKey, err = mvcc.NewKey(it.Key())
-		if err != nil {
-			return lastKey, err
-		}
-		log.Printf("it RawKey=%v, Revision=%v, Flag=%v\n",
-			string(lastKey.RawKey), lastKey.Revision, lastKey.Flag)
-		it.Next()
-	}
-	log.Printf("result: RawKey=%v, LastRevision=%v, Flag=%v\n",
-		string(lastKey.RawKey), lastKey.Revision, lastKey.Flag)
-	return lastKey, err
 }
 
 func checkDeleteRequest(r *pb.DeleteRangeRequest) error {

@@ -2,8 +2,9 @@ package rpc
 
 import (
 	"context"
-	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/powerispower/TiDB-Hackathon2018/etcdserver"
+
+	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 )
 
 type maintenanceServer struct {

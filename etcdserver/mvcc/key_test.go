@@ -1,34 +1,59 @@
 package mvcc
 
 import (
-	"log"
 	"reflect"
 	"testing"
 )
 
-func TestKey(t *testing.T) {
-	mockKey := &Key{}
-	mockKey.NameSpace = []byte("/db")
-	mockKey.RawKey = []byte("foo")
-	mockKey.Revision = 1
-	mockKey.Flag = 2
+func TestDataKey(t *testing.T) {
+	k := &DataKey{
+		RawKey:   []byte("foo"),
+		Flag:     DataFlagAdd,
+		Revision: 123,
+	}
 
-	mockBytes := mockKey.ToBytes()
-	key, err := NewKey(mockBytes)
-	if nil != err {
-		log.Printf(err.Error())
-		t.Error("call NewKey failed")
+	flatKey := k.ToFlatKey()
+	k2k := &DataKey{}
+	if err := k2k.ParseFromFlatKey(flatKey); err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(key.NameSpace, mockKey.NameSpace) {
-		t.Error("namespace check failed")
+	if !reflect.DeepEqual(k, k2k) {
+		t.Fatal("!reflect.DeepEqual(k, k2k)")
 	}
-	if !reflect.DeepEqual(key.RawKey, mockKey.RawKey) {
-		t.Error("RawKey check failed")
+}
+
+func TestTmpKey(t *testing.T) {
+	k := &TmpKey{
+		Directory: []byte("my_room"),
+		KeepTime:  123,
+		RawKey: (&DataKey{
+			RawKey:   []byte("foo"),
+			Flag:     DataFlagAdd,
+			Revision: 1,
+		}).ToFlatKey(),
 	}
-	if key.Revision != mockKey.Revision {
-		t.Error("revision check failed")
+
+	flatKey := k.ToFlatKey()
+	k2k := &TmpKey{}
+	if err := k2k.ParseFromFlatKey(flatKey); err != nil {
+		t.Fatal(err)
 	}
-	if key.Flag != mockKey.Flag {
-		t.Error("flag check failed")
+	if !reflect.DeepEqual(k, k2k) {
+		t.Fatal("!reflect.DeepEqual(k, k2k)")
+	}
+}
+
+func TestMetaKey(t *testing.T) {
+	k := &MetaKey{
+		RawKey: []byte("hehe"),
+	}
+
+	flatKey := k.ToFlatKey()
+	k2k := &MetaKey{}
+	if err := k2k.ParseFromFlatKey(flatKey); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(k, k2k) {
+		t.Fatal("!reflect.DeepEqual(k, k2k)")
 	}
 }
